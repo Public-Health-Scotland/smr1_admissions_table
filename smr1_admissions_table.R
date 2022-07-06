@@ -100,12 +100,7 @@ vars_selected <- c("DR_POSTCODE, SEX, AGE_IN_YEARS, AGE_IN_MONTHS, LENGTH_OF_STA
 # Sorting variables
 sort_var <- "link_no, admission_date, discharge_date, admission, discharge, uri"
 
-tests2 <- as_tibble(dbGetQuery(channel, statement=paste0(
-  "SELECT ", vars_selected,
- " FROM ANALYSIS.SMR01_PI 
-   WHERE ROWNUM <= 10 
-   ORDER BY ", sort_var))) 
-
+# Testing if a variable is used and when
 tests <- as_tibble(dbGetQuery(channel, statement=
   "SELECT count(DISCHARGE_TRANSFER_TO_LOCATION),  extract(year from admission_date)
    FROM ANALYSIS.SMR01_PI 
@@ -128,24 +123,18 @@ tests <- tests %>% group_by(link_no, cis_marker) %>%
 ###############################################.
 
 smr1_admissions <- as_tibble(dbGetQuery(channel, statement=paste0(
-   "WITH adm_table AS (
-       SELECT distinct link_no, cis_marker, 
-              MIN(admission_date) OVER (PARTITION BY link_no, cis_marker
-                                         ORDER BY ", sort_var, ") admission_date,
-              MAX(discharge_date) OVER (PARTITION BY link_no, cis_marker
-                                         ORDER BY ", sort_var, ") discharge_date
-       FROM ANALYSIS.SMR01_PI  z
-       WHERE ROWNUM <= 10000 
-    )
-          SELECT link_no, cis_marker, admission_date, discharge_date
-          FROM adm_table 
-          WHERE end_cis between '1 June 2021' and '31 December 2021' "))) %>% 
+   "SELECT distinct link_no, cis_marker, 
+           MIN(admission_date) OVER (PARTITION BY link_no, cis_marker
+                                     ORDER BY ", sort_var, ") admission_date,
+           MAX(discharge_date) OVER (PARTITION BY link_no, cis_marker
+                                     ORDER BY ", sort_var, ") discharge_date
+       FROM ANALYSIS.SMR01_PI  
+       WHERE ROWNUM <= 100000 "))) %>% 
   clean_names() #variables to lower case
 
 dbWriteTable(channel, "smr1_adm", smr1_admissions)
 
 # Delete the table once you have finished using it using dbRemoveTable
 dbRemoveTable(channel, "smr1_adm")
-# To check it has been removed:
-dbListTables(channel, schema="usernam")
+
 
