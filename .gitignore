@@ -2,6 +2,8 @@
 .Rhistory
 .Rapp.history
 
+multiple_identifiers.R
+
 # Session Data files
 .RData
 
