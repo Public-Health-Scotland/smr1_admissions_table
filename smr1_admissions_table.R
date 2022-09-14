@@ -127,30 +127,32 @@ odbc::dbWriteTable(channel, "SMR1_ADM", smr1_admissions, overwrite = T)
 dbListTables(channel, schema="JAMIEV01")
 odbcPreviewObject(channel, table="JAMIEV01.SMR1_ADM", rowLimit=0)
 
-# testing times on a 10 million table. the bigger the dataset the more it would take
+# testing times on a 10 million table. the bigger the dataset the more it would take more time
 # but with proper indexing this could be reduced big time
 system.time(new_query <- as_tibble(dbGetQuery(channel, statement=
-  "SELECT count(*)
+  "SELECT count(*), extract(year from ADMISSION_DATE) YEAR
    FROM JAMIEV01.SMR1_ADM
-    WHERE ADMISSION_DATE between '1 July 1997' and '1 August 1997'
-          AND regexp_like(MAIN_CONDITION, 'C5' )")) )
+    WHERE ADMISSION_DATE between '1 April 1997' and '31 March 2006'
+          AND regexp_like(MAIN_CONDITION, 'C5' )
+  GROUP BY extract(year from ADMISSION_DATE)")) )
 # 12 seconds
 
 #This query provides slightly different results because it counts these with intermediate 
-# episodes with a cancer diagnosis.
+# episodes with a cancer diagnosis, but also because my table is not the whole complete smr1
 system.time(old_query <- as_tibble(dbGetQuery(channel, statement=
-  "SELECT count(distinct (link_no || '-' || cis_marker))  
+  "SELECT count(distinct (link_no || '-' || cis_marker)), extract(year from ADMISSION_DATE) YEAR  
     FROM ANALYSIS.SMR01_PI 
-    WHERE admission_date between '1 July 1997' and '1 August 1997'
-          AND regexp_like(main_condition, 'C5' ) ")) )
-# 98 seconds Over 8 times more time
+    WHERE admission_date between '1 April 1997' and '31 March 2006'
+          AND regexp_like(main_condition, 'C5' ) 
+   GROUP BY extract(year from ADMISSION_DATE) ")) )
+# 80-100 seconds 7-8 times more time
 
-# This query provides a more similar results as the older one.
+# This query provides a more similar results as the older one's logic.
 system.time(new_query2 <- as_tibble(dbGetQuery(channel, statement=
  "SELECT count(*)
    FROM JAMIEV01.SMR1_ADM
-    WHERE (ADMISSION_DATE between '1 July 1997' and '1 August 1997' 
-            OR DISCHARGE_DATE between '1 July 1997' and '1 August 1997')
+    WHERE (ADMISSION_DATE between '1 April 1997' and '31 March 2006'
+            OR DISCHARGE_DATE between '1 April 1997' and '31 March 2006')
           AND regexp_like(MAIN_CONDITION, 'C5' )")) )
 
 ###############################################.
@@ -158,41 +160,67 @@ system.time(new_query2 <- as_tibble(dbGetQuery(channel, statement=
 
 alc_diag <- "E244|E512|F10|G312|G621|G721|I426|K292|K70|K852|K860|O354|P043|Q860|R780|T510|T511|T519|X45|X65|Y15|Y573|Y90|Y91|Z502|Z714|Z721"
 
-# this takes 18.6 seconds
+# this takes 18.6 seconds 241 seconds
 system.time(new_query_alcohol <- tbl_df(dbGetQuery(channel, statement= paste0(
-  "SELECT admission_id, AGE_IN_YEARS age, admission_date, 
-      discharge_date, DR_POSTCODE pc7, SEX sex_grp
+  "SELECT count(*), extract(year from ADMISSION_DATE) YEAR
   FROM JAMIEV01.SMR1_ADM z
-  WHERE discharge_date between  '1 July 1997' and '31 March 1998'
+  WHERE discharge_date between  '1 April 1997' and '31 March 2006'
       and sex <> 9
       and (regexp_like(main_condition, '", alc_diag ,"')
               or regexp_like(other_condition_1,'", alc_diag ,"')
               or regexp_like(other_condition_2,'", alc_diag ,"')
               or regexp_like(other_condition_3,'", alc_diag ,"')
               or regexp_like(other_condition_4,'", alc_diag ,"')
-              or regexp_like(other_condition_5,'", alc_diag ,"')) "))))
+              or regexp_like(other_condition_5,'", alc_diag ,"')) 
+  GROUP BY extract(year from ADMISSION_DATE)"))))
 
-# This takes 34.5
+# This takes 474 seconds
 system.time(old_query_alcohol <- tbl_df(dbGetQuery(channel, statement= paste0(
-  "SELECT link_no linkno, cis_marker cis, AGE_IN_YEARS age, admission_date, 
-      discharge_date, DR_POSTCODE pc7, SEX sex_grp
+  "SELECT count(distinct (link_no || '-' || cis_marker)), extract(year from ADMISSION_DATE) YEAR 
   FROM ANALYSIS.SMR01_PI z
-  WHERE discharge_date between  '1 July 1997' and '31 March 1998'
+  WHERE discharge_date between  '1 April 1997' and '31 March 2006'
       and sex <> 9
       and exists (
           select * 
           from ANALYSIS.SMR01_PI  
           where link_no=z.link_no and cis_marker=z.cis_marker
-            and discharge_date between '1 July 1997' and '31 March 1998'
+            and discharge_date between '1 April 1997' and '31 March 2006'
             and (regexp_like(main_condition, '", alc_diag ,"')
               or regexp_like(other_condition_1,'", alc_diag ,"')
               or regexp_like(other_condition_2,'", alc_diag ,"')
               or regexp_like(other_condition_3,'", alc_diag ,"')
               or regexp_like(other_condition_4,'", alc_diag ,"')
-              or regexp_like(other_condition_5,'", alc_diag ,"')))"))))
+              or regexp_like(other_condition_5,'", alc_diag ,"')))
+  GROUP BY extract(year from ADMISSION_DATE)"))))
 
-# This is not only more efficient in time of execution, but on resources used and
-# easier to check making things more standard
+###############################################.
+# An even more complex query , takes 14 seconds
+system.time(new_complex_query <- tbl_df(dbGetQuery(channel, statement=
+    "SELECT admission_id, admission_date, discharge_date,  dr_postcode
+    FROM JAMIEV01.SMR1_ADM 
+    WHERE discharge_date between '1 April 1997' and '31 March 2006'
+          AND regexp_like(main_condition, 'C') ")) )
+
+# This takes 113 seconds
+system.time(old_complex_query <- tbl_df(dbGetQuery(channel, statement=
+    "WITH adm_table AS (
+        SELECT distinct link_no || '-' || cis_marker admission_id, 
+            FIRST_VALUE(hbres_currentdate) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY admission_date, discharge_date) hb,
+            MIN(admission_date) OVER (PARTITION BY link_no, cis_marker) start_cis,
+            MAX(discharge_date) OVER (PARTITION BY link_no, cis_marker) end_cis
+        FROM ANALYSIS.SMR01_PI  z
+        WHERE exists(
+          SELECT * 
+          FROM ANALYSIS.SMR01_PI  
+          WHERE link_no=z.link_no and cis_marker=z.cis_marker
+              AND regexp_like(main_condition, 'C')
+              AND discharge_date between '1 April 1997' and '31 March 2006'
+        )
+    )
+    SELECT admission_id, start_cis, end_cis,  hb
+    FROM adm_table 
+    WHERE end_cis between '1 April 1997' and '31 March 2006' ")) )
 
 # Delete the table once you have finished using it using dbRemoveTable
 dbRemoveTable(channel, "SMR1_ADM")
