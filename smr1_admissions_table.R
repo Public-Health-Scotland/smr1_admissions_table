@@ -16,7 +16,7 @@
 library(odbc)          # For accessing SMRA databases
 library(dplyr)         # For data manipulation in the tidy way
 library(magrittr)      # for more pipe operators
-
+library(janitor)       # to clean variable names
 
 #SMRA connection
 channel <- suppressWarnings(dbConnect(odbc(),  dsn='SMRA',
@@ -25,45 +25,22 @@ channel <- suppressWarnings(dbConnect(odbc(),  dsn='SMRA',
 
 odbcPreviewObject(channel, table="ANALYSIS.SMR01_PI", rowLimit=0)
 
-# variables I don't need
-# "EPISODE_RECORD_KEY", "RECORD_TYPE" (all the same), "SURNAME", "FIRST_FORENAME", 
-# "SECOND_FORENAME", "PREVIOUS_SURNAME", "CI_CHI_NUMBER" (probably),
-# "NHS_NUMBER", "HEALTH_RECORDS_SYSTEM_ID" (these two are historic),
-# "ALTERNATIVE_CASE_REFERENCE", "PATIENT_IDENTIFIER" (reduce these variables), 
-# "POSTCODE" (do we  need two vars for this), 
-# "REFERRING_GP_GPD_GMC_NUMBER", "CARE_PACKAGE_IDENTIFIER", (historic these two)
-#    "PURCHASER_CODE", "SERIAL_NUMBER", (historic)
-#   "GP_REFERRAL_LETTER_NUMBER", "WAITING_LIST_GTEE_EXCEPN_CODE", (historic)
-#   "CLINICAL_FACILITY_START", "CLINICAL_FACILITY_END", (not used in 10 years)
-# "READY_FOR_DISCHARGE_DATE", (not used in 7 years)
-# MAPPED_PROVIDER_CODE, MAPPED_PROVIDER_CODE_DATE,
-# "HB_OF_RESIDENCE_CYPHER", (old geos)"HB_OF_RESIDENCE_NUMBER", "HB_OF_TREATMENT_NUMBER",
-# BATCH_NUMBER, BATCH_SEQUENCE_NUMBER, DATE_RECORD_INSERTED, DATE_LAST_AMENDED, (data management)
-# LENGTH_WAIT_CODE, OLD_SPECIALTY, OLD_SMR1_TADM_CODE, (historic?)
-#   "DEVELOPMENT_DATA_1", "DEVELOPMENT_DATA_2", "DEVELOPMENT_DATA_3", 
-#   "DEVELOPMENT_DATA_4", "DEVELOPMENT_DATA_5", "DEVELOPMENT_DATA_6", 
-#   "DEVELOPMENT_DATA_7", "DEVELOPMENT_DATA_8", 
-# PARL_CONSTITUENCY, CURRENT_TRUST_DMU,
-# ELECTORAL_WARD, OUTPUT_AREA_2001, OUTPUT_AREA_1991, GRID_REF_EASTING,
-# GRID_REF_NORTHING, DATAZONE_2001, INTZONE_2001, DATAZONE_2011,
-# INTZONE_2011, OUTPUT_AREA_2011, COUNCIL_AREA_2019, SPC_2014, (geos out)
-# HSCP_2019, DERIVED_CHI, DERIVED_CHI_WEIGHT, (can't have so many unique patient identifiers)
-# HRG42, RECORD_DATE, ACCESSION_NO,SURNAME_SNDEX_CODE, (data management)
-# PREVIOUS_SNDEX_CODE, COMMON_UNIT, SORT_MARKER, BEST_LINK_WEIGHT, (data management)
-# LAST_LINKED_DATE, GLS_CIS_MARKER, ADMISSION, (data management)
-# DISCHARGE, URI  (data management)
+###############################################.
+#Variables I am starting with
+vars_selected <- c("DR_POSTCODE, SEX, AGE_IN_YEARS, AGE_IN_MONTHS, LENGTH_OF_STAY, 
+                 LOCATION, SPECIALTY, 
+                 ADMISSION_DATE, ADMISSION_TYPE,
+                 DISCHARGE_DATE, DISCHARGE_TYPE,
+                 MAIN_CONDITION,
+                 OTHER_CONDITION_1, OTHER_CONDITION_2, OTHER_CONDITION_3,
+                 OTHER_CONDITION_4, OTHER_CONDITION_5, MAIN_OPERATION,
+                 OTHER_OPERATION_1, OTHER_OPERATION_2, OTHER_OPERATION_3,
+                 INPATIENT_DAYCASE_IDENTIFIER, UPI_NUMBER,
+                 LINK_NO, CIS_MARKER")
 
-###############################################.
-#varibles I am not sure about
-#"SENDING_LOCATION", I think this is data management
-# "DOB", 
-# "MANAGEMENT_OF_PATIENT", feels very data management?
-# "PROVIDER_CODE" - is this just HB/hospital location?
-# DISCHARGE_TRANSFER_TO_LOCATION barely used
-#CLINICIAN_MAIN_OPERATION maybe much for stay level? It will be difficult to link to the operation
-# ADMISSION, DISCHARGE, URI used for sorting records only?
-# GPPRAC_KEYDATE, GPPRAC_CURRENTDATE, Are these used? maybe add later
-###############################################.
+# Sorting variables
+sort_var <- "link_no, admission_date, discharge_date, admission, discharge, uri"
+
 #Variables I need
 vars_selected <- c("DR_POSTCODE, SEX, MARITAL_STATUS, 
                  ETHNIC_GROUP, GP_PRACTICE_CODE, LOCATION, SPECIALTY, 
@@ -85,56 +62,150 @@ vars_selected <- c("DR_POSTCODE, SEX, MARITAL_STATUS,
   HBTREAT_CURRENTDATE,  LINK_NO, CIS_MARKER")
 
 ###############################################.
-#Variables I am starting with
-vars_selected <- c("DR_POSTCODE, SEX, AGE_IN_YEARS, AGE_IN_MONTHS, LENGTH_OF_STAY, 
-                 LOCATION, SPECIALTY, 
-                 ADMISSION_DATE, ADMISSION_TYPE,
-                 DISCHARGE_DATE, DISCHARGE_TYPE,
-                 MAIN_CONDITION,
-                 OTHER_CONDITION_1, OTHER_CONDITION_2, OTHER_CONDITION_3,
-                 OTHER_CONDITION_4, OTHER_CONDITION_5, MAIN_OPERATION,
-                 OTHER_OPERATION_1, OTHER_OPERATION_2, OTHER_OPERATION_3,
-                 INPATIENT_DAYCASE_IDENTIFIER, UPI_NUMBER,
-                 LINK_NO, CIS_MARKER")
-
-# Sorting variables
-sort_var <- "link_no, admission_date, discharge_date, admission, discharge, uri"
-
-# Testing if a variable is used and when
-tests <- as_tibble(dbGetQuery(channel, statement=
-  "SELECT count(DISCHARGE_TRANSFER_TO_LOCATION),  extract(year from admission_date)
-   FROM ANALYSIS.SMR01_PI 
-  WHERE DISCHARGE_TRANSFER_TO_LOCATION is not null
-   GRoup by extract(year from admission_date) ")) 
-
-tests <- as_tibble(dbGetQuery(channel, statement=paste0(
-  "SELECT ", vars_selected,
-  " FROM ANALYSIS.SMR01_PI 
-   WHERE ROWNUM <= 100000 
-   ORDER BY ", sort_var))) %>% 
-  janitor::clean_names()
-
-tests <- tests %>% group_by(link_no, cis_marker) %>% 
-  mutate(count = n()) %>% ungroup()
-
-
-###############################################.
 ## Starting the proper query ----
 ###############################################.
-
+#location, do we want a string for this? similar for HB of treatment? specialty?
+# Would UPI always be the same for a certain link_no, cis_marker? It seems like it
+# but not the same for different admissions
+# Variables need to be saved as upper case
 smr1_admissions <- as_tibble(dbGetQuery(channel, statement=paste0(
-   "SELECT distinct link_no, cis_marker, 
-           MIN(admission_date) OVER (PARTITION BY link_no, cis_marker
-                                     ORDER BY ", sort_var, ") admission_date,
-           MAX(discharge_date) OVER (PARTITION BY link_no, cis_marker
-                                     ORDER BY ", sort_var, ") discharge_date
+   "SELECT distinct (link_no || '-' ||cis_marker) admission_id, 
+          FIRST_VALUE(upi_number) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") UPI_NUMBER,
+           MIN(admission_date) OVER (PARTITION BY link_no, cis_marker) ADMISSION_DATE,
+           MAX(discharge_date) OVER (PARTITION BY link_no, cis_marker) DISCHARGE_DATE,
+           FIRST_VALUE(admission_type) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") ADMISSION_TYPE,
+           FIRST_VALUE(discharge_type) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") DISCHARGE_TYPE,
+           SUM(length_of_stay) OVER (PARTITION BY link_no, cis_marker) LENGTH_OF_STAY,
+           FIRST_VALUE(dr_postcode) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") DR_POSTCODE,
+           FIRST_VALUE(sex) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") SEX,
+           FIRST_VALUE(age_in_years) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") AGE_IN_YEARS,
+           FIRST_VALUE(age_in_months) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") AGE_IN_MONTHS,
+           FIRST_VALUE(inpatient_daycase_identifier) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") INPATIENT_DAYCASE_IDENTIFIER,
+           FIRST_VALUE(location) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") LOCATION_FIRST,
+          LISTAGG(location, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) LOCATION_STRING,
+           FIRST_VALUE(specialty) OVER (PARTITION BY link_no, cis_marker 
+                ORDER BY ", sort_var, ") SPECIALTY_FIRST,
+          LISTAGG(specialty, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) SPECIALTY_STRING,
+          LISTAGG(main_condition, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) MAIN_CONDITION,
+          LISTAGG(other_condition_1, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_CONDITION_1, 
+          LISTAGG(other_condition_2, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_CONDITION_2, 
+          LISTAGG(other_condition_3, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_CONDITION_3, 
+          LISTAGG(other_condition_4, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_CONDITION_4, 
+          LISTAGG(other_condition_5, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_CONDITION_5,
+          LISTAGG(main_operation, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) MAIN_OPERATION,
+          LISTAGG(other_operation_1, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_OPERATION_1,
+          LISTAGG(other_operation_2, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_OPERATION_2,
+          LISTAGG(other_operation_3, '|') WITHIN GROUP (ORDER BY ", sort_var, ") 
+                  OVER (PARTITION BY link_no, cis_marker ) OTHER_OPERATION_3
        FROM ANALYSIS.SMR01_PI  
-       WHERE ROWNUM <= 100000 "))) %>% 
-  clean_names() #variables to lower case
+       WHERE ROWNUM <= 10000000  "))) 
+ 
+View(smr1_admissions)
 
-dbWriteTable(channel, "smr1_adm", smr1_admissions)
+# This needs a version of odbc > 1.2.2 - I use 1.3.3
+odbc::dbWriteTable(channel, "SMR1_ADM", smr1_admissions, overwrite = T)
+dbListTables(channel, schema="JAMIEV01")
+odbcPreviewObject(channel, table="JAMIEV01.SMR1_ADM", rowLimit=0)
+
+# testing times on a 10 million table. the bigger the dataset the more it would take
+# but with proper indexing this could be reduced big time
+system.time(new_query <- as_tibble(dbGetQuery(channel, statement=
+  "SELECT count(*)
+   FROM JAMIEV01.SMR1_ADM
+    WHERE ADMISSION_DATE between '1 July 1997' and '1 August 1997'
+          AND regexp_like(MAIN_CONDITION, 'C5' )")) )
+# 12 seconds
+
+#This query provides slightly different results because it counts these with intermediate 
+# episodes with a cancer diagnosis.
+system.time(old_query <- as_tibble(dbGetQuery(channel, statement=
+  "SELECT count(distinct (link_no || '-' || cis_marker))  
+    FROM ANALYSIS.SMR01_PI 
+    WHERE admission_date between '1 July 1997' and '1 August 1997'
+          AND regexp_like(main_condition, 'C5' ) ")) )
+# 98 seconds Over 8 times more time
+
+# This query provides a more similar results as the older one.
+system.time(new_query2 <- as_tibble(dbGetQuery(channel, statement=
+ "SELECT count(*)
+   FROM JAMIEV01.SMR1_ADM
+    WHERE (ADMISSION_DATE between '1 July 1997' and '1 August 1997' 
+            OR DISCHARGE_DATE between '1 July 1997' and '1 August 1997')
+          AND regexp_like(MAIN_CONDITION, 'C5' )")) )
+
+###############################################.
+# A more complex query 
+
+alc_diag <- "E244|E512|F10|G312|G621|G721|I426|K292|K70|K852|K860|O354|P043|Q860|R780|T510|T511|T519|X45|X65|Y15|Y573|Y90|Y91|Z502|Z714|Z721"
+
+# this takes 18.6 seconds
+system.time(new_query_alcohol <- tbl_df(dbGetQuery(channel, statement= paste0(
+  "SELECT admission_id, AGE_IN_YEARS age, admission_date, 
+      discharge_date, DR_POSTCODE pc7, SEX sex_grp
+  FROM JAMIEV01.SMR1_ADM z
+  WHERE discharge_date between  '1 July 1997' and '31 March 1998'
+      and sex <> 9
+      and (regexp_like(main_condition, '", alc_diag ,"')
+              or regexp_like(other_condition_1,'", alc_diag ,"')
+              or regexp_like(other_condition_2,'", alc_diag ,"')
+              or regexp_like(other_condition_3,'", alc_diag ,"')
+              or regexp_like(other_condition_4,'", alc_diag ,"')
+              or regexp_like(other_condition_5,'", alc_diag ,"')) "))))
+
+# This takes 34.5
+system.time(old_query_alcohol <- tbl_df(dbGetQuery(channel, statement= paste0(
+  "SELECT link_no linkno, cis_marker cis, AGE_IN_YEARS age, admission_date, 
+      discharge_date, DR_POSTCODE pc7, SEX sex_grp
+  FROM ANALYSIS.SMR01_PI z
+  WHERE discharge_date between  '1 July 1997' and '31 March 1998'
+      and sex <> 9
+      and exists (
+          select * 
+          from ANALYSIS.SMR01_PI  
+          where link_no=z.link_no and cis_marker=z.cis_marker
+            and discharge_date between '1 July 1997' and '31 March 1998'
+            and (regexp_like(main_condition, '", alc_diag ,"')
+              or regexp_like(other_condition_1,'", alc_diag ,"')
+              or regexp_like(other_condition_2,'", alc_diag ,"')
+              or regexp_like(other_condition_3,'", alc_diag ,"')
+              or regexp_like(other_condition_4,'", alc_diag ,"')
+              or regexp_like(other_condition_5,'", alc_diag ,"')))"))))
+
+# This is not only more efficient in time of execution, but on resources used and
+# easier to check making things more standard
 
 # Delete the table once you have finished using it using dbRemoveTable
-dbRemoveTable(channel, "smr1_adm")
+dbRemoveTable(channel, "SMR1_ADM")
+
+###############################################.
+## How the database structure should look ----
+###############################################.
+# One table/view at admission level
+# One table/view at episode level (exists)
+# One table/view at location level, so if a patient changes hospital this creates a new episode,
+# but if they stay in the same location during the whole admission it would be one episode
+# One table/view at specialty level. Same as above but for specialty.
+# One table//view at consultant level. Same as above but for specialty
+
 
 
